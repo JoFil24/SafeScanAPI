@@ -6,3 +6,7 @@ RESULTS_DIR = "./results"
 ZAP_API_KEY = "changeme-zap-api-key"
 ZAP_HOST = "127.0.0.1"
 ZAP_PORT = 8090
+
+# Ollama settings
+OLLAMA_HOST = "http://localhost:11434"
+OLLAMA_MODEL = "mistral"  # or "tinyllama" for low-RAM systems

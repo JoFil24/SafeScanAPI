@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 from zapv2 import ZAPv2
 from config import RESULTS_DIR, ZAP_API_KEY, ZAP_HOST, ZAP_PORT
+from llm import analyze_with_llm
 
 WEB_PORTS = {80, 443, 8080, 8443, 8000, 3000, 5000}
 
@@ -24,10 +25,9 @@ def load_job(job_id):
     with open(path) as f:
         return json.load(f)
 
-# ─── Step 1: Nmap ────────────────────────────────────────────────────────────
+# ─── Step 1: Nmap ─────────────────────────────────────────────────────────────
 
 def run_nmap(target):
-    """Run Nmap and return parsed results + list of discovered web ports."""
     nm = nmap.PortScanner()
     nm.scan(hosts=target, arguments="-sV -T4 --top-ports 1000")
 
@@ -60,29 +60,28 @@ def run_nmap(target):
 
     return hosts, found_web_ports
 
-# ─── Step 2: ZAP ─────────────────────────────────────────────────────────────
+# ─── Step 2: ZAP ──────────────────────────────────────────────────────────────
 
 def run_zap(web_targets):
-    """Run ZAP spider + active scan against each discovered web target."""
     zap = ZAPv2(
         apikey=ZAP_API_KEY,
-        proxies={"http": f"http://{ZAP_HOST}:{ZAP_PORT}", "https": f"http://{ZAP_HOST}:{ZAP_PORT}"}
+        proxies={
+            "http": f"http://{ZAP_HOST}:{ZAP_PORT}",
+            "https": f"http://{ZAP_HOST}:{ZAP_PORT}"
+        }
     )
 
     all_alerts = []
 
     for target_url in web_targets:
-        # Spider the target first
         spider_id = zap.spider.scan(target_url, apikey=ZAP_API_KEY)
         while int(zap.spider.status(spider_id)) < 100:
             time.sleep(2)
 
-        # Active scan
         scan_id = zap.ascan.scan(target_url, apikey=ZAP_API_KEY)
         while int(zap.ascan.status(scan_id)) < 100:
             time.sleep(5)
 
-        # Collect alerts
         alerts = zap.core.alerts(baseurl=target_url)
         for alert in alerts:
             all_alerts.append({
@@ -93,7 +92,6 @@ def run_zap(web_targets):
                 "name": alert.get("alert"),
                 "description": alert.get("description"),
                 "solution": alert.get("solution"),
-                "reference": alert.get("reference"),
                 "cweid": alert.get("cweid"),
                 "wascid": alert.get("wascid"),
             })
@@ -103,31 +101,28 @@ def run_zap(web_targets):
 # ─── Step 3: Orchestrator ─────────────────────────────────────────────────────
 
 def run_scan(target, job_id):
-    """Full scan pipeline: Nmap → ZAP (if web ports found)."""
+    started = datetime.utcnow().isoformat()
+
     save_job(job_id, {
         "status": "running",
         "stage": "nmap",
         "target": target,
-        "started": datetime.utcnow().isoformat()
+        "started": started
     })
 
     try:
-        # --- Nmap ---
+        # Nmap
         nmap_results, web_targets = run_nmap(target)
 
         save_job(job_id, {
             "status": "running",
-            "stage": "zap" if web_targets else "complete",
+            "stage": "zap" if web_targets else "analyzing",
             "target": target,
-            "started": datetime.utcnow().isoformat(),
-            "results": {
-                "nmap": nmap_results,
-                "web_targets_found": web_targets,
-                "zap": []
-            }
+            "started": started,
+            "results": {"nmap": nmap_results, "web_targets_found": web_targets, "zap": []}
         })
 
-        # --- ZAP (only if web ports were found) ---
+        # ZAP
         zap_results = []
         if web_targets:
             try:
@@ -135,17 +130,30 @@ def run_scan(target, job_id):
             except Exception as zap_err:
                 zap_results = [{"error": f"ZAP failed: {str(zap_err)}"}]
 
-        # --- Final result ---
+        # LLM analysis
+        save_job(job_id, {
+            "status": "running",
+            "stage": "analyzing",
+            "target": target,
+            "started": started,
+            "results": {"nmap": nmap_results, "web_targets_found": web_targets, "zap": zap_results}
+        })
+
+        scan_results = {"nmap": nmap_results, "zap": zap_results}
+        ai_analysis = analyze_with_llm(scan_results)
+
+        # Final save
         save_job(job_id, {
             "status": "complete",
             "target": target,
-            "started": datetime.utcnow().isoformat(),
+            "started": started,
             "finished": datetime.utcnow().isoformat(),
             "results": {
                 "nmap": nmap_results,
                 "web_targets_found": web_targets,
                 "zap": zap_results
-            }
+            },
+            "ai_analysis": ai_analysis
         })
 
     except Exception as e:
