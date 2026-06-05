@@ -1,0 +1,4 @@
+curl -X POST http://localhost:8000/scan \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: changeme-use-a-long-random-string" \
+  -d '{"target": "testphp.vulnweb.com"}'
