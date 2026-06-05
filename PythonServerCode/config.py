@@ -9,4 +9,4 @@ ZAP_PORT = 8090
 
 # Ollama settings
 OLLAMA_HOST = "http://localhost:11434"
-OLLAMA_MODEL = "tinyllama"  # or "tinyllama" for low-RAM systems
+OLLAMA_MODEL = "tinyllama"
