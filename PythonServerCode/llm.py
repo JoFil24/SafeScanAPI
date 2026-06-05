@@ -50,7 +50,7 @@ def analyze_with_llm(scan_results):
                 "prompt": prompt,
                 "stream": False
             },
-            timeout=120  # LLM can take a while
+            timeout=300  # LLM can take a while
         )
         response.raise_for_status()
         data = response.json()

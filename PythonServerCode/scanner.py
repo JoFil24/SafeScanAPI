@@ -4,7 +4,9 @@ import uuid
 import os
 import time
 import threading
+import shutil
 from datetime import datetime
+from urllib.parse import urlparse
 from zapv2 import ZAPv2
 from config import RESULTS_DIR, ZAP_API_KEY, ZAP_HOST, ZAP_PORT
 from llm import analyze_with_llm
@@ -27,9 +29,24 @@ def load_job(job_id):
 
 # ─── Step 1: Nmap ─────────────────────────────────────────────────────────────
 
+def normalize_target(target):
+    parsed = urlparse(target if "://" in target else f"http://{target}")
+    return parsed.hostname or target, parsed.port, parsed.scheme if parsed.scheme in {"http", "https"} else None
+
+
 def run_nmap(target):
+    if shutil.which("nmap") is None:
+        raise RuntimeError("nmap is not installed or not on PATH. Install nmap and try again.")
+
+    host, port, _ = normalize_target(target)
     nm = nmap.PortScanner()
-    nm.scan(hosts=target, arguments="-sV -T4 --top-ports 1000")
+
+    if port:
+        port_args = f"-p {port},1-1000"
+    else:
+        port_args = "--top-ports 1000"
+
+    nm.scan(hosts=host, arguments=f"-sT -T4 -Pn {port_args}")
 
     hosts = []
     found_web_ports = []
@@ -74,12 +91,53 @@ def run_zap(web_targets):
     all_alerts = []
 
     for target_url in web_targets:
-        spider_id = zap.spider.scan(target_url, apikey=ZAP_API_KEY)
+        parsed = urlparse(target_url)
+        host = parsed.hostname or target_url
+        context_name = f"context-{host.replace('.', '-') }"
+
+        # Create a context limited to the target host so spider/ascan stay in-scope
+        try:
+            zap.context.new_context(context_name, apikey=ZAP_API_KEY)
+            zap.context.include_in_context(context_name, f".*{host}.*", apikey=ZAP_API_KEY)
+        except Exception:
+            # Ignore if context APIs are not available or context already exists
+            pass
+
+        # Try to set safe spider options; ignore if not available in this ZAP version
+        try:
+            zap.spider.set_option_max_children(50)
+            zap.spider.set_option_max_depth(2)
+            zap.spider.set_option_max_duration(60)
+        except Exception:
+            pass
+
+        # Start spider with context and reduced maxChildren where supported;
+        # fall back to a simple scan call if keyword args are rejected.
+        try:
+            spider_id = zap.spider.scan(target_url, apikey=ZAP_API_KEY, contextName=context_name, maxChildren=50)
+        except TypeError:
+            spider_id = zap.spider.scan(target_url, apikey=ZAP_API_KEY)
+
         while int(zap.spider.status(spider_id)) < 100:
             time.sleep(2)
 
-        scan_id = zap.ascan.scan(target_url, apikey=ZAP_API_KEY)
+        # Throttle active scanner where possible
+        try:
+            zap.ascan.set_option_thread_per_host(1)
+        except Exception:
+            pass
+
+        # Prefer scanning only in-scope; fall back if API doesn't accept the kwarg
+        try:
+            scan_id = zap.ascan.scan(target_url, apikey=ZAP_API_KEY, recurse=True, inScopeOnly=True)
+        except TypeError:
+            try:
+                scan_id = zap.ascan.scan(target_url, apikey=ZAP_API_KEY, recurse=True)
+            except Exception:
+                scan_id = zap.ascan.scan(target_url, apikey=ZAP_API_KEY)
+
         while int(zap.ascan.status(scan_id)) < 100:
+            print(f"ZAP scan progress for {target_url}: {zap.ascan.status(scan_id)}%")
             time.sleep(5)
 
         alerts = zap.core.alerts(baseurl=target_url)
@@ -155,6 +213,8 @@ def run_scan(target, job_id):
             },
             "ai_analysis": ai_analysis
         })
+
+        print(f"Scan complete for {target} (Job ID: {job_id})")
 
     except Exception as e:
         save_job(job_id, {
