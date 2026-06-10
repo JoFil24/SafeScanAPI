@@ -133,7 +133,7 @@ def run_zap(web_targets):
         except TypeError:
             try:
                 scan_id = zap.ascan.scan(target_url, apikey=ZAP_API_KEY, recurse=True)
-            except Exception:
+            except Exception:   
                 scan_id = zap.ascan.scan(target_url, apikey=ZAP_API_KEY)
 
         while int(zap.ascan.status(scan_id)) < 100:

@@ -1,16 +1,29 @@
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from scanner import start_scan, load_job
 from config import API_KEY, ALLOWED_IPS
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5174", "http://127.0.0.1:5174"],
+    allow_credentials = True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 class ScanRequest(BaseModel):
-    target: str
+    target: str 
 
 @app.middleware("http")
 async def guard(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     client_ip = request.client.host
+
     if client_ip not in ALLOWED_IPS:
         raise HTTPException(status_code=403, detail="Forbidden")
     key = request.headers.get("X-API-Key")
